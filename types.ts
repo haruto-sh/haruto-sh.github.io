@@ -10,11 +10,13 @@ export interface ExcelFile {
 export interface MergeResult {
   groupName: string;
   url: string;
+  blob: Blob;
   fileCount: number;
 }
 
 export interface ProcessingStatus {
   isProcessing: boolean;
+  isZipping?: boolean;
   progress: number;
   error: string | null;
   results: MergeResult[];

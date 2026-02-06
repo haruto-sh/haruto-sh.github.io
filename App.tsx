@@ -12,9 +12,11 @@ import {
   Info,
   ExternalLink,
   FolderOpen,
-  ChevronDown,
-  FileCheck
+  FileCheck,
+  Archive,
+  Zap
 } from 'lucide-react';
+import JSZip from 'jszip';
 import { ExcelFile, ProcessingStatus, MergeResult } from './types.ts';
 import { mergeExcelFiles, getGroupKey } from './services/excelService.ts';
 
@@ -22,12 +24,12 @@ const App: React.FC = () => {
   const [files, setFiles] = useState<ExcelFile[]>([]);
   const [status, setStatus] = useState<ProcessingStatus>({
     isProcessing: false,
+    isZipping: false,
     progress: 0,
     error: null,
     results: [],
   });
 
-  // グループ化されたファイルの計算
   const groupedFiles = useMemo(() => {
     const groups: Record<string, ExcelFile[]> = {};
     files.forEach(file => {
@@ -64,6 +66,7 @@ const App: React.FC = () => {
 
     setStatus({
       isProcessing: true,
+      isZipping: false,
       progress: 0,
       error: null,
       results: [],
@@ -77,17 +80,16 @@ const App: React.FC = () => {
         const key = groupKeys[i];
         const groupFiles = groupedFiles[key].map(f => f.file);
         
-        // グループごとに結合処理を実行
         const mergedBlob = await mergeExcelFiles(groupFiles);
         const url = URL.createObjectURL(mergedBlob);
         
         results.push({
           groupName: key,
           url: url,
+          blob: mergedBlob,
           fileCount: groupFiles.length
         });
 
-        // 進捗更新
         setStatus(prev => ({
           ...prev,
           progress: Math.round(((i + 1) / groupKeys.length) * 100)
@@ -104,9 +106,39 @@ const App: React.FC = () => {
       setStatus({
         isProcessing: false,
         progress: 0,
-        error: '処理中にエラーが発生しました。ファイル形式やシート名を確認してください。',
+        error: '処理中にエラーが発生しました。ファイル形式を確認してください。',
         results: [],
       });
+    }
+  };
+
+  const handleDownloadZip = async () => {
+    if (status.results.length === 0) return;
+    
+    setStatus(prev => ({ ...prev, isZipping: true }));
+    
+    try {
+      const zip = new JSZip();
+      status.results.forEach(res => {
+        zip.file(`${res.groupName}.xlsx`, res.blob);
+      });
+      
+      const zipContent = await zip.generateAsync({ type: 'blob' });
+      const zipUrl = URL.createObjectURL(zipContent);
+      
+      const link = document.createElement('a');
+      link.href = zipUrl;
+      const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      link.download = `merged_excel_files_${timestamp}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(zipUrl);
+    } catch (err) {
+      console.error(err);
+      alert('ZIPの作成中にエラーが発生しました。');
+    } finally {
+      setStatus(prev => ({ ...prev, isZipping: false }));
     }
   };
 
@@ -115,6 +147,7 @@ const App: React.FC = () => {
     setFiles([]);
     setStatus({
       isProcessing: false,
+      isZipping: false,
       progress: 0,
       error: null,
       results: [],
@@ -150,9 +183,7 @@ const App: React.FC = () => {
 
       <main className="flex-grow py-10 px-4">
         <div className="max-w-4xl mx-auto">
-          {/* Main Container */}
           <div className="bg-white shadow-2xl shadow-slate-200 rounded-[2.5rem] overflow-hidden border border-slate-100">
-            {/* Header Section */}
             <div className="bg-slate-900 p-10 text-white relative">
               <div className="absolute -right-10 -bottom-10 opacity-10">
                 <FolderOpen className="w-64 h-64 rotate-12" />
@@ -160,23 +191,12 @@ const App: React.FC = () => {
               <div className="relative z-10">
                 <h2 className="text-3xl font-black mb-3">試験種ごとの自動結合</h2>
                 <p className="text-slate-400 text-sm max-w-lg leading-relaxed">
-                  ファイル名から試験種を自動判別します。`A中学_2026_小学理科_1_1` と `A中学_2026_小学理科_1_2` をアップロードすると、自動的に `A中学_2026_小学理科_1` としてまとめられます。
+                  ファイルをアップロードするだけで、試験種ごとに自動で分類し、結合・並べ替えを行います。
                 </p>
               </div>
             </div>
 
             <div className="p-10">
-              {/* Privacy/Instruction Banner */}
-              <div className="mb-10 flex items-start p-5 bg-blue-50 border border-blue-100 rounded-3xl">
-                <Info className="w-6 h-6 text-blue-500 mr-4 flex-shrink-0 mt-0.5" />
-                <div className="text-sm">
-                  <p className="text-blue-900 font-bold mb-1">使い方</p>
-                  <p className="text-blue-700 leading-relaxed">
-                    末尾に `_1`, `_2` と付いたファイルをまとめて選択してください。システムが自動で共通部分を抜き出し、試験種ごとにグループ化します。
-                  </p>
-                </div>
-              </div>
-
               {/* Upload Dropzone */}
               {!status.results.length && (
                 <div className="relative group">
@@ -190,7 +210,7 @@ const App: React.FC = () => {
                         <Upload className="w-10 h-10 text-indigo-600" />
                       </div>
                       <p className="text-lg font-black text-slate-800 mb-1">Excelファイルを一括選択</p>
-                      <p className="text-sm text-slate-400 font-medium">ドラッグ＆ドロップ、またはクリックで選択</p>
+                      <p className="text-sm text-slate-400 font-medium">ドラッグ＆ドロップ、またはクリック</p>
                     </div>
                     <input type="file" className="hidden" multiple accept=".xlsx" onChange={onFileChange} />
                   </label>
@@ -199,15 +219,12 @@ const App: React.FC = () => {
 
               {/* Grouped File Display */}
               {files.length > 0 && !status.isProcessing && !status.results.length && (
-                <div className="mt-10 space-y-6">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div className="mt-10 animate-in fade-in duration-500">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-6">
                     <h3 className="font-black text-slate-800 flex items-center">
                       <FolderOpen className="w-5 h-5 mr-2 text-indigo-500" />
                       検出された試験種 ({Object.keys(groupedFiles).length})
                     </h3>
-                    <button onClick={() => setFiles([])} className="text-xs font-bold text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors">
-                      すべて解除
-                    </button>
                   </div>
 
                   <div className="grid gap-4">
@@ -217,40 +234,39 @@ const App: React.FC = () => {
                           <div className="flex items-center space-x-3">
                             <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
                             <span className="font-bold text-slate-700 text-sm">{key}</span>
-                            <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md uppercase">
-                              {groupFiles.length} FILES
-                            </span>
                           </div>
-                          <button onClick={() => removeGroup(key)} className="text-slate-300 hover:text-red-500 transition-colors">
+                          <button onClick={() => removeGroup(key)} className="text-slate-300 hover:text-red-500">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                         <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                           {groupFiles.map(f => (
-                            <div key={f.id} className="flex items-center justify-between bg-white px-3 py-2 rounded-xl border border-slate-100/50 shadow-sm">
-                              <span className="text-xs text-slate-500 truncate mr-2">{f.name}</span>
-                              <div className="flex items-center space-x-2 flex-shrink-0">
-                                <span className="text-[9px] font-bold text-slate-300 uppercase">{formatSize(f.size)}</span>
-                                <button onClick={() => removeFile(f.id)} className="text-slate-200 hover:text-red-400">
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                            <div key={f.id} className="flex items-center justify-between bg-white px-3 py-2 rounded-xl border border-slate-100/50 text-xs">
+                              <span className="text-slate-500 truncate mr-2">{f.name}</span>
+                              <button onClick={() => removeFile(f.id)} className="text-slate-200 hover:text-red-400">
+                                <Trash2 className="w-3 h-3" />
+                              </button>
                             </div>
                           ))}
                         </div>
                       </div>
                     ))}
                   </div>
+
+                  <button 
+                    onClick={handleMergeAll}
+                    className="w-full mt-10 py-6 bg-indigo-600 text-white rounded-[2rem] font-black text-xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center space-x-4"
+                  >
+                    <Zap className="w-6 h-6 fill-current" />
+                    <span>結合を開始 ({Object.keys(groupedFiles).length}グループ)</span>
+                  </button>
                 </div>
               )}
 
               {/* Processing Loader */}
               {status.isProcessing && (
                 <div className="mt-10 py-16 flex flex-col items-center justify-center">
-                  <div className="relative mb-6">
-                    <Loader2 className="w-16 h-16 text-indigo-600 animate-spin" />
-                    <Layers className="w-6 h-6 text-indigo-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
-                  </div>
+                  <Loader2 className="w-16 h-16 text-indigo-600 animate-spin mb-4" />
                   <h3 className="text-xl font-black text-slate-800 mb-2">一括処理中... {status.progress}%</h3>
                   <div className="w-64 h-2 bg-slate-100 rounded-full overflow-hidden">
                     <div className="h-full bg-indigo-600 transition-all duration-300" style={{ width: `${status.progress}%` }}></div>
@@ -261,7 +277,7 @@ const App: React.FC = () => {
               {/* Error Display */}
               {status.error && (
                 <div className="mt-8 p-5 bg-red-50 rounded-[1.5rem] flex items-start space-x-4 border border-red-100">
-                  <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                  <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0" />
                   <p className="text-red-800 text-sm font-bold">{status.error}</p>
                 </div>
               )}
@@ -274,31 +290,44 @@ const App: React.FC = () => {
                       <FileCheck className="w-10 h-10 text-white" />
                     </div>
                     <h2 className="text-3xl font-black text-slate-800">結合完了！</h2>
-                    <p className="text-slate-400 font-bold text-sm">試験種ごとに {status.results.length} 個のファイルを作成しました</p>
+                    <p className="text-slate-400 font-bold text-sm">計 {status.results.length} 個のファイルを作成しました</p>
                   </div>
+
+                  {/* Bulk Download Button */}
+                  {status.results.length > 1 && (
+                    <button 
+                      onClick={handleDownloadZip}
+                      disabled={status.isZipping}
+                      className="w-full mb-8 py-5 bg-slate-900 text-white rounded-[1.5rem] font-black flex items-center justify-center space-x-3 shadow-xl hover:bg-slate-800 transition-all disabled:opacity-50"
+                    >
+                      {status.isZipping ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Archive className="w-5 h-5" />
+                      )}
+                      <span>すべてのファイルをZIPで保存</span>
+                    </button>
+                  )}
 
                   <div className="grid gap-4 sm:grid-cols-2">
                     {status.results.map((res, i) => (
-                      <div key={i} className="group bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-emerald-200 transition-all duration-300 flex flex-col justify-between">
+                      <div key={i} className="group bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-lg transition-all flex flex-col justify-between">
                         <div>
                           <div className="flex items-center justify-between mb-4">
                              <div className="p-3 bg-emerald-50 rounded-2xl">
                                <FileText className="w-6 h-6 text-emerald-600" />
                              </div>
-                             <span className="text-[10px] font-black bg-slate-50 text-slate-400 px-2 py-1 rounded-lg">
-                               {res.fileCount} SOURCES
-                             </span>
                           </div>
-                          <h4 className="font-black text-slate-800 mb-1 truncate" title={res.groupName}>{res.groupName}.xlsx</h4>
-                          <p className="text-[11px] text-slate-400 font-bold mb-6">各シートの大問番号を昇順ソート済み</p>
+                          <h4 className="font-black text-slate-800 mb-1 truncate text-sm" title={res.groupName}>{res.groupName}.xlsx</h4>
+                          <p className="text-[10px] text-slate-400 font-bold mb-4">{res.fileCount} 個の元ファイルを結合</p>
                         </div>
                         <a 
                           href={res.url} 
                           download={`${res.groupName}.xlsx`}
-                          className="flex items-center justify-center space-x-2 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-lg shadow-emerald-100 group-hover:bg-emerald-700 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                          className="flex items-center justify-center space-x-2 py-3 bg-emerald-600 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-50 hover:bg-emerald-700 transition-all"
                         >
-                          <Download className="w-4 h-4" />
-                          <span>保存する</span>
+                          <Download className="w-3.5 h-3.5" />
+                          <span>単体で保存</span>
                         </a>
                       </div>
                     ))}
@@ -306,32 +335,18 @@ const App: React.FC = () => {
 
                   <button 
                     onClick={reset}
-                    className="mt-12 block mx-auto text-slate-400 hover:text-indigo-600 text-xs font-bold uppercase tracking-widest transition-colors"
+                    className="mt-12 block mx-auto text-slate-400 hover:text-indigo-600 text-xs font-bold uppercase tracking-widest"
                   >
                     ← 別のファイルをアップロード
-                  </button>
-                </div>
-              )}
-
-              {/* Final Action Button */}
-              {!status.isProcessing && !status.results.length && files.length > 0 && (
-                <div className="mt-10">
-                  <button 
-                    onClick={handleMergeAll}
-                    className="w-full py-6 bg-indigo-600 text-white rounded-[2rem] font-black text-xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center space-x-4"
-                  >
-                    <Layers className="w-6 h-6" />
-                    <span>試験種ごとに結合を開始 ({Object.keys(groupedFiles).length}種)</span>
                   </button>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Guidelines Footer */}
           {!status.results.length && (
-            <div className="mt-16 grid grid-cols-1 md:grid-cols-2 gap-8 px-6">
-              <div className="flex space-x-5">
+            <div>
+              <div className="mt-10 p-6 bg-white rounded-3xl border border-slate-100 flex items-center space-x-4">
                 <div className="bg-white p-4 rounded-3xl shadow-sm h-fit border border-slate-100">
                   <FolderOpen className="w-6 h-6 text-indigo-500" />
                 </div>
@@ -342,7 +357,7 @@ const App: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex space-x-5">
+              <div className="mt-10 p-6 bg-white rounded-3xl border border-slate-100 flex items-center space-x-4">
                 <div className="bg-white p-4 rounded-3xl shadow-sm h-fit border border-slate-100">
                   <CheckCircle2 className="w-6 h-6 text-emerald-500" />
                 </div>
@@ -353,22 +368,22 @@ const App: React.FC = () => {
                   </p>
                 </div>
               </div>
+              <div className="mt-10 p-6 bg-white rounded-3xl border border-slate-100 flex items-center space-x-4">
+                <div className="p-3 bg-indigo-50 rounded-2xl">
+                  <Info className="w-6 h-6 text-indigo-500" />
+                </div>
+                <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                  <span className="font-bold text-indigo-600">一括ダウンロード対応:</span> 
+                  複数の試験種を処理した際は、ページ上部のボタンからZIP形式で一括保存できるようになりました。
+                </p>
+              </div>
             </div>
           )}
         </div>
       </main>
 
-      <footer className="py-12 px-6 border-t border-slate-100 bg-white">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-          <p>© 2025 Excel Group Merger - Precision Built for Exams</p>
-          <div className="flex space-x-8 mt-6 md:mt-0">
-            <a href="#" className="hover:text-indigo-600 transition-colors">Privacy</a>
-            <a href="#" className="hover:text-indigo-600 transition-colors">Terms</a>
-            <a href="https://ai.google.dev" className="flex items-center hover:text-indigo-600 transition-colors">
-              Docs <ExternalLink className="w-3 h-3 ml-1.5" />
-            </a>
-          </div>
-        </div>
+      <footer className="py-12 px-6 text-center text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+        <p>© 2025 Excel Group Merger - Secure Browser Processing</p>
       </footer>
     </div>
   );
